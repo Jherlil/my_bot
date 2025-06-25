@@ -1,3 +1,5 @@
+"""Main trading loop for the IQ Option bot."""
+
 import time
 import pandas as pd
 from iqoptionapi.stable_api import IQ_Option
@@ -8,12 +10,22 @@ from risk import RiskManager
 from ml_model import MLModel
 
 def get_candles_df(IQ, asset, timeframe, num_candles):
+    """Fetch recent candles as ``pandas`` DataFrame."""
     candles = IQ.get_candles(asset, timeframe, num_candles, time.time())
     return pd.DataFrame(candles)
 
 def main():
-    config = load_config('config.yaml')
-    IQ = IQ_Option(config['email'], config['password']); IQ.connect(); IQ.change_balance(config['account_type'].lower())
+    """Entrypoint for the trading bot."""
+    config = load_config("config.yaml")
+
+    IQ = IQ_Option(config["email"], config["password"])
+    try:
+        IQ.connect()
+    except Exception as exc:
+        log(f"Falha ao conectar: {exc}", level="error")
+        return
+    IQ.change_balance(config["account_type"].upper())
+
 
     fundamental = FundamentalAnalyzer(buffer_minutes=config['news_buffer_minutes'])
     technical = TechnicalAnalyzer(
@@ -63,7 +75,11 @@ def main():
             if payout < config['min_payout'] or payout > config['max_payout']:
                 continue
 
-            df = get_candles_df(IQ, asset, config['timeframe_main'], num_candles=100)
+            try:
+                df = get_candles_df(IQ, asset, config['timeframe_main'], num_candles=100)
+            except Exception as exc:
+                log(f"Erro ao obter velas: {exc}", level="error")
+                continue
             df = technical.calculate_moving_averages(df)
             breakout = technical.detect_breakout(df)
             trend = technical.detect_trend(df)
@@ -90,9 +106,13 @@ def main():
                 if direction:
                     if ml.predict_high_chance(features):
                         amount = risk.next_amount(asset, high_chance=True, payout=payout)
-                        log(f"[{asset}] Entrando {direction} com {amount} — alta_chance={True}")
-                        status, order_id = IQ.buy(amount, asset, direction, expiry=1)
-                        result, _ = IQ.check_win(order_id)
+                        log(f"[{asset}] Entrando {direction} com {amount} — alta_chance=True")
+                        try:
+                            status, order_id = IQ.buy(amount, asset, direction, expiry=1)
+                            result, _ = IQ.check_win(order_id)
+                        except Exception as exc:
+                            log(f"Erro ao executar ordem: {exc}", level="error")
+                            result = False
                         risk.register_trade(asset, result)
                         ml.log_trade(features, result)
 
