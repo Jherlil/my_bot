@@ -1,68 +1,126 @@
-import numpy as np
+"""Main trading loop for the IQ Option bot."""
+
+import time
 import pandas as pd
-import talib
-from utils import log
+from iqoptionapi.stable_api import IQ_Option
+from utils import log, load_config
+from fundamental import FundamentalAnalyzer
+from technical import TechnicalAnalyzer
+from risk import RiskManager
+from ml_model import MLModel
 
-class TechnicalAnalyzer:
-    def __init__(self, ma_fast=20, ma_slow=50, volume_period=20):
-        self.ma_fast = ma_fast
-        self.ma_slow = ma_slow
-        self.volume_period = volume_period
+def get_candles_df(IQ, asset, timeframe, num_candles):
+    """Fetch recent candles as ``pandas`` DataFrame."""
+    candles = IQ.get_candles(asset, timeframe, num_candles, time.time())
+    return pd.DataFrame(candles)
 
-    def calculate_moving_averages(self, df):
-        df['MA_fast'] = df['close'].rolling(self.ma_fast).mean()
-        df['MA_slow'] = df['close'].rolling(self.ma_slow).mean()
-        return df
+def main():
+    """Entrypoint for the trading bot."""
+    config = load_config("config.yaml")
 
-    def detect_trend(self, df):
-        last = df.iloc[-1]
-        return "up" if last.MA_fast > last.MA_slow else "down" if last.MA_fast < last.MA_slow else "flat"
+    IQ = IQ_Option(config["email"], config["password"])
+    try:
+        IQ.connect()
+    except Exception as exc:
+        log(f"Falha ao conectar: {exc}", level="error")
+        return
+    IQ.change_balance(config["account_type"].upper())
 
-    def detect_breakout(self, df):
-        support = df['low'].min()
-        resistance = df['high'].max()
-        last = df.iloc[-1]
-        if last.close > resistance:
-            return "breakout_up"
-        elif last.close < support:
-            return "breakout_down"
-        return None
 
-    def detect_candlestick_patterns(self, df):
-        o, h, l, c = df.open.values, df.high.values, df.low.values, df.close.values
-        patterns = []
-        for func_name in talib.get_function_groups()['Pattern Recognition']:
-            func = getattr(talib, func_name)
-            result = func(o, h, l, c)
-            last_signal = result[-1]
-            if last_signal != 0:
-                patterns.append((func_name, last_signal))
-        return patterns
+    fundamental = FundamentalAnalyzer(buffer_minutes=config['news_buffer_minutes'])
+    technical = TechnicalAnalyzer(
+        ma_fast=config['trend_ma_fast'],
+        ma_slow=config['trend_ma_slow'],
+        volume_period=config['volume_period'],
+    )
+    risk = RiskManager(
+        stop_loss_amount=config['stop_loss_amount'],
+        stop_loss_consecutive=config['stop_loss_consecutive'],
+        stop_win_amount=config['stop_win_amount'],
+        stop_win_victories=config['stop_win_victories'],
+        strategy=config['strategy'],
+        martingale_factor=config['martingale_factor'],
+        soros_level=config['soros_level'],
+        use_martingale_if_high_chance=config['use_martingale_if_high_chance'],
+        use_soros_if_low_payout=config['use_soros_if_low_payout'],
+        min_payout_for_soros=config['min_payout_for_soros'],
+        assets=config['assets'],
+    )
+    ml = MLModel()
 
-    def support_resistance(self, df, lookback=50):
-        return df['low'].rolling(lookback).min().iloc[-1], df['high'].rolling(lookback).max().iloc[-1]
+    daily_wins = 0
+    last_trade_date = None
 
-    def fibonacci_levels(self, df):
-        swing_high = df['high'].max()
-        swing_low = df['low'].min()
-        diff = swing_high - swing_low
-        return {r: swing_low + diff * r for r in [0.236, 0.382, 0.5, 0.618, 0.786]}
+    while True:
+        log("Loop principal...")
+        ml.check_and_train_daily()
 
-    def draw_trendlines(self, df):
-        top_idx = df['high'].idxmax()
-        bottom_idx = df['low'].idxmin()
-        return {"LTA/LTB": (bottom_idx, top_idx)}
+        if fundamental.check_high_impact_news():
+            log("Esperando — notícia importante próxima...")
+            time.sleep(60)
+            continue
 
-    def validate_candle_pattern(self, candle, pattern_name):
-        body = abs(candle.close - candle.open)
-        shadow_down = candle.open - candle.low if candle.open > candle.close else candle.close - candle.low
-        shadow_up = candle.high - max(candle.open, candle.close)
-        if pattern_name == "hammer":
-            return shadow_down > body * 2 and shadow_up < body
-        elif pattern_name == "shooting_star":
-            return shadow_up > body * 2 and shadow_down < body
-        elif pattern_name == "engulfing":
-            return body > abs(candle.open - candle.close)
-        elif pattern_name == "doji":
-            return body < (candle.high - candle.low) * 0.1
-        return True
+        # Reseta win diário
+        if last_trade_date is None or last_trade_date.date() < pd.Timestamp.now().date():
+            daily_wins = 0
+        last_trade_date = pd.Timestamp.now()
+
+        if daily_wins >= config['stop_win_victories']:
+            log("Stop win diário atingido — esperando até amanhã...")
+            time.sleep(60*60)
+            continue
+
+        for asset in config['assets']:
+            payout = IQ.get_profitability(asset)
+            if payout < config['min_payout'] or payout > config['max_payout']:
+                continue
+
+            try:
+                df = get_candles_df(IQ, asset, config['timeframe_main'], num_candles=100)
+            except Exception as exc:
+                log(f"Erro ao obter velas: {exc}", level="error")
+                continue
+            df = technical.calculate_moving_averages(df)
+            breakout = technical.detect_breakout(df)
+            trend = technical.detect_trend(df)
+            patterns = technical.detect_candlestick_patterns(df)
+            pattern_name = patterns[0][0] if patterns else None
+            last_candle = df.iloc[-1]
+
+            # Calcular features
+            avg_volume = df['volume'].rolling(config['volume_period']).mean().iloc[-1]
+            volume_ratio = last_candle.volume / avg_volume
+            high_chance = all([breakout, pattern_name, volume_ratio > 1.0, trend != "flat"])
+
+            features = {
+                "pattern_name": pattern_name or "unknown",
+                "breakout": breakout or "none",
+                "trend": trend,
+                "volume_ratio": volume_ratio,
+                "payout": payout,
+                # incluir aqui outras features que você queira treinar
+            }
+
+            if breakout and risk.can_trade(asset):
+                direction = "call" if breakout == "breakout_up" and trend == "up" else "put" if breakout == "breakout_down" and trend == "down" else None
+                if direction:
+                    if ml.predict_high_chance(features):
+                        amount = risk.next_amount(asset, high_chance=True, payout=payout)
+                        log(f"[{asset}] Entrando {direction} com {amount} — alta_chance=True")
+                        try:
+                            status, order_id = IQ.buy(amount, asset, direction, expiry=1)
+                            result, _ = IQ.check_win(order_id)
+                        except Exception as exc:
+                            log(f"Erro ao executar ordem: {exc}", level="error")
+                            result = False
+                        risk.register_trade(asset, result)
+                        ml.log_trade(features, result)
+
+                        if result:
+                            daily_wins += 1
+
+        log("Esperando próximo ciclo...")
+        time.sleep(config['timeframe_main'])
+
+if __name__ == "__main__":
+    main()
