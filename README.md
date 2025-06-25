@@ -8,7 +8,8 @@
 - Filtro contra notícias de alto impacto.
 
 ## 🧠 Como usar
-1. Configure o \`config.yaml\`.
+1. Configure o \`config.yaml\` (email e senha também podem ser definidos pelas
+   variáveis de ambiente `BOT_EMAIL` e `BOT_PASSWORD`).
 2. Rode \`webhook.py\` (servidor TradingView).
 3. Crie alertas TradingView apontando para o servidor.
 4. Rode \`bot.py\` para análise automática + confirmação TradingView.
@@ -17,5 +18,7 @@
 \`\`\`
 pip install iqoptionapi pandas flask feedparser pyyaml TA-Lib
 \`\`\`
+
+Os logs são gravados em `bot.log` com rotação automática.
 
 ---

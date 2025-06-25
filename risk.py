@@ -1,9 +1,24 @@
+"""Risk management helpers."""
+
 from utils import log
 
 class RiskManager:
-    def __init__(self, stop_loss_amount, stop_loss_consecutive, stop_win_amount, stop_win_victories,
-                 strategy, martingale_factor, soros_level, use_martingale_if_high_chance,
-                 use_soros_if_low_payout, min_payout_for_soros, assets):
+    """Manage trade amounts and stop conditions for each asset."""
+
+    def __init__(
+        self,
+        stop_loss_amount: float,
+        stop_loss_consecutive: int,
+        stop_win_amount: float,
+        stop_win_victories: int,
+        strategy: str,
+        martingale_factor: float,
+        soros_level: float,
+        use_martingale_if_high_chance: bool,
+        use_soros_if_low_payout: bool,
+        min_payout_for_soros: float,
+        assets,
+    ):
         self.stop_loss_amount = stop_loss_amount
         self.stop_loss_consecutive = stop_loss_consecutive
         self.stop_win_amount = stop_win_amount
@@ -14,10 +29,19 @@ class RiskManager:
         self.use_martingale_if_high_chance = use_martingale_if_high_chance
         self.use_soros_if_low_payout = use_soros_if_low_payout
         self.min_payout_for_soros = min_payout_for_soros
-        self.assets = {asset: {"current_amount": 1, "losses_amount": 0, "wins_amount": 0,
-                               "consecutive_losses": 0, "consecutive_wins": 0} for asset in assets}
+        self.assets = {
+            asset: {
+                "current_amount": 1,
+                "losses_amount": 0,
+                "wins_amount": 0,
+                "consecutive_losses": 0,
+                "consecutive_wins": 0,
+            }
+            for asset in assets
+        }
 
     def can_trade(self, asset):
+        """Return ``True`` if trading on *asset* is allowed under risk limits."""
         a = self.assets[asset]
         if a["losses_amount"] >= self.stop_loss_amount:
             log(f"[{asset}] Stop loss global atingido — perdas: {a['losses_amount']}")
@@ -34,6 +58,7 @@ class RiskManager:
         return True
 
     def next_amount(self, asset, high_chance=False, payout=1.0):
+        """Return the next order amount for *asset* based on strategy."""
         a = self.assets[asset]
         amount = a["current_amount"]
 
@@ -45,6 +70,7 @@ class RiskManager:
         return amount
 
     def register_trade(self, asset, result):
+        """Update statistics after a trade finishes."""
         a = self.assets[asset]
         if result:
             a["wins_amount"] += a["current_amount"]
