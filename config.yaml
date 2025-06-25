@@ -1,0 +1,31 @@
+email: "jherlilsales@gmail.com"
+password: "13031997"
+account_type: "PRACTICE"
+assets:
+  - "EURUSD"
+  - "GBPUSD"
+  - "USDJPY"
+  - "AUDUSD"
+  - "AUDCAD"
+  - "EURGBP"
+timeframe_main: 300
+min_payout: 0.75
+max_payout: 0.95
+
+stop_loss_amount: 100
+stop_loss_consecutive: 2
+stop_win_amount: 100
+stop_win_victories: 5
+
+strategy: "normal"
+martingale_factor: 2
+soros_level: 3
+
+volume_period: 20
+trend_ma_fast: 20
+trend_ma_slow: 50
+news_buffer_minutes: 60
+
+use_martingale_if_high_chance: true
+use_soros_if_low_payout: true
+min_payout_for_soros: 0.80
